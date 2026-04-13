@@ -35,8 +35,10 @@ local function CreateMainFrame()
     f:SetScript("OnDragStop", function(self) self:StopMovingOrSizing() end)
     f:Hide()
 
-    local title = f:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
-    title:SetPoint("TOPLEFT", f, "TOPLEFT", 10, -8)
+    local title = f:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    title:SetPoint("TOPLEFT", f, "TOPLEFT", 10, -10)
+    title:SetPoint("RIGHT", f, "RIGHT", -30, 0)
+    title:SetJustifyH("LEFT")
     title:SetText("Cauldron Tracker")
     title:SetTextColor(1, 0.84, 0)
     f.titleText = title
@@ -114,7 +116,7 @@ local function Refresh(f)
         local raidSize = GetNumGroupMembers()
         if raidSize == 0 then raidSize = 1 end
         allotment = math.floor(numCauldrons * 40 / raidSize)
-        f.titleText:SetText(string.format("Cauldron — %s (%d placed, %d/person)", today, numCauldrons, allotment))
+        f.titleText:SetText(string.format("Cauldron — %d each", allotment))
     else
         f.titleText:SetText("Cauldron — " .. today)
     end

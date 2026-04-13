@@ -58,7 +58,7 @@ end
 
 local frame = CreateFrame("Frame")
 frame:RegisterEvent("CHAT_MSG_LOOT")
-frame:RegisterEvent("COMBAT_LOG_EVENT_UNFILTERED")
+pcall(frame.RegisterEvent, frame, "COMBAT_LOG_EVENT_UNFILTERED")
 frame:RegisterEvent("ADDON_LOADED")
 frame:SetScript("OnEvent", function(self, event, ...)
     if event == "ADDON_LOADED" then
