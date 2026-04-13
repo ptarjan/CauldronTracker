@@ -1,8 +1,9 @@
 ## Interface: 120001
-## Title: CauldronTracker
+## Title: Cauldron Tracker
+## IconTexture: Interface\Icons\INV_Alchemy_80_Cauldron02
 ## Author: ptarjan
 ## Version: 1.0.0
-## Notes: Tracks how many flasks/phials people grab from cauldrons.
+## Notes: Tracks how many flasks/phials each person takes from raid cauldrons.
 ## SavedVariables: CauldronTrackerDB
 
 CauldronTracker.lua
