@@ -1,0 +1,9 @@
+## Interface: 120001
+## Title: CauldronTracker
+## Author: ptarjan
+## Version: 1.0.0
+## Notes: Tracks how many flasks/phials people grab from cauldrons.
+## SavedVariables: CauldronTrackerDB
+
+CauldronTracker.lua
+CauldronTrackerUI.lua
