@@ -5,6 +5,7 @@
 ## Version: 1.0.0
 ## Notes: Tracks how many flasks/phials each person takes from raid cauldrons.
 ## SavedVariables: CauldronTrackerDB
+## X-Curse-Project-ID: 1512700
 
 CauldronTracker.lua
 CauldronTrackerUI.lua

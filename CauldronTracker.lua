@@ -56,40 +56,52 @@ local function GetAllotment()
     return math.floor(totalCharges / raidSize)
 end
 
-local frame = CreateFrame("Frame")
-frame:RegisterEvent("CHAT_MSG_LOOT")
-pcall(frame.RegisterEvent, frame, "COMBAT_LOG_EVENT_UNFILTERED")
-frame:RegisterEvent("ADDON_LOADED")
-frame:SetScript("OnEvent", function(self, event, ...)
-    if event == "ADDON_LOADED" then
-        local name = ...
-        if name == addonName then
-            CauldronTrackerDB = CauldronTrackerDB or {}
-            self:UnregisterEvent("ADDON_LOADED")
-            Print("Loaded. /cauldron to view, /cauldron reset to clear.")
-        end
-        return
-    end
+local function IsSecret(v)
+    return issecretvalue and issecretvalue(v)
+end
 
-    if event == "COMBAT_LOG_EVENT_UNFILTERED" then
-        local _, subevent, _, _, sourceName, _, _, _, _, _, _, spellID, spellName = CombatLogGetCurrentEventInfo()
-        if subevent == "SPELL_CREATE" and spellName and spellName:lower():find("cauldron") then
-            local cauldrons = GetTodayCauldrons()
-            local placer = StripRealm(sourceName)
-            table.insert(cauldrons, { player = placer, time = date("%H:%M") })
-            Print(string.format("%s placed a cauldron! (%d total today)", placer, #cauldrons))
-        end
-        return
-    end
+local function RefreshUI()
+    local f = _G["CauldronTrackerFrame"]
+    if f and f:IsShown() and f.Refresh then f:Refresh() end
+end
 
-    -- CHAT_MSG_LOOT: arg1=message, arg2=playerName (with realm)
-    local msg, playerName = ...
-    local itemLink = msg:match("|Hitem:.-%|h%[.-%]|h")
+-- Dedicated frame for ADDON_LOADED
+local loadFrame = CreateFrame("Frame")
+loadFrame:RegisterEvent("ADDON_LOADED")
+loadFrame:SetScript("OnEvent", function(self, event, name)
+    if name == addonName then
+        CauldronTrackerDB = CauldronTrackerDB or {}
+        self:UnregisterEvent("ADDON_LOADED")
+        Print("Loaded. /cauldron to view, /cauldron reset to clear.")
+    end
+end)
+
+-- Dedicated frame for COMBAT_LOG_EVENT_UNFILTERED (isolated to avoid cross-event taint)
+local clFrame = CreateFrame("Frame")
+clFrame:RegisterEvent("COMBAT_LOG_EVENT_UNFILTERED")
+clFrame:SetScript("OnEvent", function()
+    local _, subevent, _, _, sourceName, _, _, _, _, _, _, spellID, spellName = CombatLogGetCurrentEventInfo()
+    if IsSecret(subevent) or IsSecret(sourceName) or IsSecret(spellName) then return end
+    if subevent == "SPELL_CREATE" and spellName and string.find(string.lower(spellName), "cauldron") then
+        local cauldrons = GetTodayCauldrons()
+        local placer = StripRealm(sourceName)
+        table.insert(cauldrons, { player = placer, time = date("%H:%M") })
+        Print(string.format("%s placed a cauldron! (%d total today)", placer, #cauldrons))
+        RefreshUI()
+    end
+end)
+
+-- Dedicated frame for CHAT_MSG_LOOT (has 12.0 secret values for other players)
+local lootFrame = CreateFrame("Frame")
+lootFrame:RegisterEvent("CHAT_MSG_LOOT")
+lootFrame:SetScript("OnEvent", function(self, event, msg, playerName)
+    if not msg or IsSecret(msg) then return end
+    local itemLink = string.match(msg, "|Hitem:.-%|h%[.-%]|h")
     if not itemLink then return end
     if not IsFlaskOrPhial(itemLink) then return end
 
     local player
-    if playerName and playerName ~= "" then
+    if playerName and not IsSecret(playerName) and playerName ~= "" then
         player = StripRealm(playerName)
     else
         player = UnitName("player")
@@ -97,9 +109,10 @@ frame:SetScript("OnEvent", function(self, event, ...)
 
     if not player or player == "" then return end
 
-    local qty = tonumber(msg:match("x(%d+)")) or 1
+    local qty = tonumber(string.match(msg, "x(%d+)")) or 1
     local counts = GetTodayCounts()
     counts[player] = (counts[player] or 0) + qty
+    RefreshUI()
 end)
 
 local function ShowCounts(day)
