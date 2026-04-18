@@ -199,6 +199,7 @@ end
 local function ToggleUI()
     if not CTFrame then
         CTFrame = CreateMainFrame()
+        CTFrame.Refresh = function(self) Refresh(self) end
     end
     if CTFrame:IsShown() then
         CTFrame:Hide()

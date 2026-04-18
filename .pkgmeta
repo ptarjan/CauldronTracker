@@ -1,2 +1,3 @@
 package-as: CauldronTracker
 project-id: 1512700
+manual-changelog: CHANGELOG.md

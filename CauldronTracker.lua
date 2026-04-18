@@ -76,15 +76,22 @@ loadFrame:SetScript("OnEvent", function(self, event, name)
     end
 end)
 
--- Dedicated frame for COMBAT_LOG_EVENT_UNFILTERED (isolated to avoid cross-event taint)
+-- Detect cauldron placement via UNIT_SPELLCAST_SUCCEEDED (COMBAT_LOG_EVENT_UNFILTERED is restricted in 12.0)
 local clFrame = CreateFrame("Frame")
-clFrame:RegisterEvent("COMBAT_LOG_EVENT_UNFILTERED")
-clFrame:SetScript("OnEvent", function()
-    local _, subevent, _, _, sourceName, _, _, _, _, _, _, spellID, spellName = CombatLogGetCurrentEventInfo()
-    if IsSecret(subevent) or IsSecret(sourceName) or IsSecret(spellName) then return end
-    if subevent == "SPELL_CREATE" and spellName and string.find(string.lower(spellName), "cauldron") then
-        local cauldrons = GetTodayCauldrons()
+clFrame:RegisterEvent("UNIT_SPELLCAST_SUCCEEDED")
+clFrame:SetScript("OnEvent", function(self, event, unit, castGUID, spellID)
+    if not unit then return end
+    -- Only track group members
+    local prefix = string.sub(unit, 1, 4)
+    if prefix ~= "raid" and prefix ~= "part" and unit ~= "player" then return end
+    local spellName = C_Spell.GetSpellName(spellID)
+    if not spellName then return end
+    if IsSecret(spellName) then return end
+    if string.find(string.lower(spellName), "cauldron") then
+        local sourceName = UnitName(unit)
+        if IsSecret(sourceName) then return end
         local placer = StripRealm(sourceName)
+        local cauldrons = GetTodayCauldrons()
         table.insert(cauldrons, { player = placer, time = date("%H:%M") })
         Print(string.format("%s placed a cauldron! (%d total today)", placer, #cauldrons))
         RefreshUI()
