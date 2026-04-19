@@ -76,12 +76,11 @@ loadFrame:SetScript("OnEvent", function(self, event, name)
     end
 end)
 
--- Detect cauldron placement via UNIT_SPELLCAST_SUCCEEDED (COMBAT_LOG_EVENT_UNFILTERED is restricted in 12.0)
+-- Detect cauldron placement via UNIT_SPELLCAST_START (has cast time, unlike taking which is instant)
 local clFrame = CreateFrame("Frame")
-clFrame:RegisterEvent("UNIT_SPELLCAST_SUCCEEDED")
+clFrame:RegisterEvent("UNIT_SPELLCAST_START")
 clFrame:SetScript("OnEvent", function(self, event, unit, castGUID, spellID)
     if not unit then return end
-    -- Only track group members
     local prefix = string.sub(unit, 1, 4)
     if prefix ~= "raid" and prefix ~= "part" and unit ~= "player" then return end
     local spellName = C_Spell.GetSpellName(spellID)
@@ -177,6 +176,13 @@ SlashCmdList["CAULDRON"] = function(msg)
         for _, day in ipairs(days) do
             ShowCounts(day)
         end
+    elseif msg:sub(1, 3) == "add" then
+        local who = strtrim(msg:sub(4))
+        if who == "" then who = UnitName("player") end
+        local cauldrons = GetTodayCauldrons()
+        table.insert(cauldrons, { player = who, time = date("%H:%M") })
+        Print(string.format("Recorded cauldron from %s (%d total today)", who, #cauldrons))
+        RefreshUI()
     elseif msg == "share" then
         local counts = GetTodayCounts()
         if not next(counts) then
