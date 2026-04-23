@@ -97,6 +97,32 @@ clFrame:SetScript("OnEvent", function(self, event, unit, castGUID, spellID)
     end
 end)
 
+-- Burst detection: if 3+ flask loots happen within 30s, that's a cauldron
+local recentLoots = {}  -- timestamps of recent flask loots
+local lastCauldronDetectTime = 0
+local BURST_THRESHOLD = 3
+local BURST_WINDOW = 30
+
+local function CheckForCauldronBurst()
+    local now = GetTime()
+    -- Prune old entries
+    local fresh = {}
+    for _, t in ipairs(recentLoots) do
+        if now - t < BURST_WINDOW then
+            tinsert(fresh, t)
+        end
+    end
+    recentLoots = fresh
+
+    if #recentLoots >= BURST_THRESHOLD and (now - lastCauldronDetectTime) > BURST_WINDOW then
+        lastCauldronDetectTime = now
+        local cauldrons = GetTodayCauldrons()
+        table.insert(cauldrons, { player = "?", time = date("%H:%M") })
+        Print(string.format("Cauldron detected (burst of %d loots)! (%d total today)", #recentLoots, #cauldrons))
+        RefreshUI()
+    end
+end
+
 -- Dedicated frame for CHAT_MSG_LOOT (has 12.0 secret values for other players)
 local lootFrame = CreateFrame("Frame")
 lootFrame:RegisterEvent("CHAT_MSG_LOOT")
@@ -118,6 +144,11 @@ lootFrame:SetScript("OnEvent", function(self, event, msg, playerName)
     local qty = tonumber(string.match(msg, "x(%d+)")) or 1
     local counts = GetTodayCounts()
     counts[player] = (counts[player] or 0) + qty
+
+    -- Track for burst detection
+    tinsert(recentLoots, GetTime())
+    CheckForCauldronBurst()
+
     RefreshUI()
 end)
 

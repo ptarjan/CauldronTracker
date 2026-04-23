@@ -1,4 +1,4 @@
-## Interface: 120001
+## Interface: 120005
 ## Title: Cauldron Tracker
 ## IconTexture: Interface\Icons\INV_Alchemy_80_Cauldron02
 ## Author: ptarjan
