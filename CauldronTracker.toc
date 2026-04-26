@@ -2,7 +2,7 @@
 ## Title: Cauldron Tracker
 ## IconTexture: Interface\Icons\INV_Alchemy_80_Cauldron02
 ## Author: ptarjan
-## Version: 1.0.0
+## Version: 1.0.6
 ## Notes: Tracks how many flasks/phials each person takes from raid cauldrons.
 ## SavedVariables: CauldronTrackerDB
 ## X-Curse-Project-ID: 1512700

@@ -76,6 +76,15 @@ loadFrame:SetScript("OnEvent", function(self, event, name)
     end
 end)
 
+-- Burst detection state (declared early so spell-cast handler can update it)
+local recentLoots = {}  -- timestamps of recent flask loots
+local lastFlaskLootTime = 0  -- timestamp of most recent flask loot (or spell-cast detection)
+local burstFiredThisSession = false  -- has burst already counted a cauldron in the current loot session?
+local recentCastGUIDs = {}  -- castGUID -> time, dedup spell-cast detections
+local BURST_THRESHOLD = 3
+local BURST_WINDOW = 30
+local SESSION_QUIET = 60  -- seconds of no flask loots before considering a new cauldron session has started
+
 -- Detect cauldron placement via UNIT_SPELLCAST_START (has cast time, unlike taking which is instant)
 local clFrame = CreateFrame("Frame")
 clFrame:RegisterEvent("UNIT_SPELLCAST_START")
@@ -86,22 +95,25 @@ clFrame:SetScript("OnEvent", function(self, event, unit, castGUID, spellID)
     local spellName = C_Spell.GetSpellName(spellID)
     if not spellName then return end
     if IsSecret(spellName) then return end
-    if string.find(string.lower(spellName), "cauldron") then
-        local sourceName = UnitName(unit)
-        if IsSecret(sourceName) then return end
-        local placer = StripRealm(sourceName)
-        local cauldrons = GetTodayCauldrons()
-        table.insert(cauldrons, { player = placer, time = date("%H:%M") })
-        Print(string.format("%s placed a cauldron! (%d total today)", placer, #cauldrons))
-        RefreshUI()
-    end
-end)
+    if not string.find(string.lower(spellName), "cauldron") then return end
 
--- Burst detection: if 3+ flask loots happen within 30s, that's a cauldron
-local recentLoots = {}  -- timestamps of recent flask loots
-local lastCauldronDetectTime = 0
-local BURST_THRESHOLD = 3
-local BURST_WINDOW = 30
+    -- Dedup: same cast can fire for both "player" and "raidN" when you're the caster
+    if castGUID and recentCastGUIDs[castGUID] then return end
+    if castGUID then recentCastGUIDs[castGUID] = GetTime() end
+
+    local sourceName = UnitName(unit)
+    if IsSecret(sourceName) then return end
+    local placer = StripRealm(sourceName)
+    local cauldrons = GetTodayCauldrons()
+    table.insert(cauldrons, { player = placer, time = date("%H:%M") })
+
+    -- Mark the loot session as already-counted so the upcoming flood of flask loots doesn't add a duplicate
+    burstFiredThisSession = true
+    lastFlaskLootTime = GetTime()
+
+    Print(string.format("%s placed a cauldron! (%d total today)", placer, #cauldrons))
+    RefreshUI()
+end)
 
 local function CheckForCauldronBurst()
     local now = GetTime()
@@ -114,8 +126,8 @@ local function CheckForCauldronBurst()
     end
     recentLoots = fresh
 
-    if #recentLoots >= BURST_THRESHOLD and (now - lastCauldronDetectTime) > BURST_WINDOW then
-        lastCauldronDetectTime = now
+    if #recentLoots >= BURST_THRESHOLD and not burstFiredThisSession then
+        burstFiredThisSession = true
         local cauldrons = GetTodayCauldrons()
         table.insert(cauldrons, { player = "?", time = date("%H:%M") })
         Print(string.format("Cauldron detected (burst of %d loots)! (%d total today)", #recentLoots, #cauldrons))
@@ -145,8 +157,14 @@ lootFrame:SetScript("OnEvent", function(self, event, msg, playerName)
     local counts = GetTodayCounts()
     counts[player] = (counts[player] or 0) + qty
 
-    -- Track for burst detection
-    tinsert(recentLoots, GetTime())
+    -- Track for burst detection. A long quiet period since the last flask loot resets the session,
+    -- allowing burst detection to fire again for a new cauldron.
+    local now = GetTime()
+    if now - lastFlaskLootTime > SESSION_QUIET then
+        burstFiredThisSession = false
+    end
+    lastFlaskLootTime = now
+    tinsert(recentLoots, now)
     CheckForCauldronBurst()
 
     RefreshUI()

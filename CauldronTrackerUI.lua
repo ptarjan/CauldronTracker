@@ -116,7 +116,8 @@ local function Refresh(f)
         local raidSize = GetNumGroupMembers()
         if raidSize == 0 then raidSize = 1 end
         allotment = math.floor(numCauldrons * 40 / raidSize)
-        f.titleText:SetText(string.format("Cauldron — %d each", allotment))
+        local label = numCauldrons == 1 and "cauldron" or "cauldrons"
+        f.titleText:SetText(string.format("Cauldron — %d each (%d %s)", allotment, numCauldrons, label))
     else
         f.titleText:SetText("Cauldron — " .. today)
     end
