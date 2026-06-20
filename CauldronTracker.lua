@@ -8,6 +8,16 @@ local function Print(msg)
     DEFAULT_CHAT_FRAME:AddMessage("|cff00ccff[Cauldron]|r " .. msg)
 end
 
+local DEBUG_LOG_MAX = 500  -- keep the most recent N log entries
+local function DebugPrint(msg)
+    if not CauldronTrackerDB then return end
+    CauldronTrackerDB.debugLog = CauldronTrackerDB.debugLog or {}
+    table.insert(CauldronTrackerDB.debugLog, date("%H:%M:%S") .. " " .. msg)
+    if #CauldronTrackerDB.debugLog > DEBUG_LOG_MAX then
+        table.remove(CauldronTrackerDB.debugLog, 1)
+    end
+end
+
 local function StripRealm(name)
     if not name then return name end
     return (strsplit("-", name, 2))
@@ -34,19 +44,27 @@ local function GetTodayCauldrons()
     return GetTodayData().cauldrons
 end
 
--- Match flask/phial items from loot messages
-local function IsFlaskOrPhial(itemLink)
+-- All cauldron output items (flasks, potions, draughts) start with "Fleeting".
+-- Matching the prefix captures the full set rather than just flasks/phials.
+local function IsFleetingItem(itemLink)
     if not itemLink then return false end
     local name = C_Item.GetItemNameByID(itemLink) or GetItemInfo(itemLink)
     if not name then
         name = itemLink:match("%[(.-)%]")
     end
     if not name then return false end
-    name = name:lower()
-    return name:find("flask") or name:find("phial")
+    return name:lower():find("^fleeting") ~= nil
 end
 
 local CAULDRON_CHARGES = 40
+
+-- Known placement spells. Matching by ID is precise; the name fallback below
+-- catches future cauldrons we haven't ID'd yet.
+local CAULDRON_SPELL_IDS = {
+    [1240019] = "Prepare Midnight Flask Cauldron",
+    [432878]  = "Prepare Algari Flask Cauldron",
+}
+local CAULDRON_ACTIVE_DURATION = 300  -- cauldron lasts 5 minutes after placement
 
 local function GetAllotment()
     local cauldrons = GetTodayCauldrons()
@@ -76,14 +94,21 @@ loadFrame:SetScript("OnEvent", function(self, event, name)
     end
 end)
 
--- Burst detection state (declared early so spell-cast handler can update it)
-local recentLoots = {}  -- timestamps of recent flask loots
-local lastFlaskLootTime = 0  -- timestamp of most recent flask loot (or spell-cast detection)
-local burstFiredThisSession = false  -- has burst already counted a cauldron in the current loot session?
+-- A cauldron has 40 charges over 5 minutes. We track an "active window" — when a cauldron
+-- is known to be active, any "Fleeting"-item create is counted as 1 cauldron use.
+-- Outside the window, creates are buffered; if 3+ DIFFERENT players create within 30s,
+-- we infer a cauldron is active (spell-cast detection missed) and retroactively count them.
+local cauldronActiveUntil = 0
+local recentCreates = {}  -- buffer of {time, player} for events not yet attributed to a cauldron
 local recentCastGUIDs = {}  -- castGUID -> time, dedup spell-cast detections
-local BURST_THRESHOLD = 3
+local recentLootKeys = {}  -- (player|itemLink) -> time, dedup duplicate loot messages
+local BURST_THRESHOLD = 3   -- distinct players required to infer a cauldron
 local BURST_WINDOW = 30
-local SESSION_QUIET = 60  -- seconds of no flask loots before considering a new cauldron session has started
+local LOOT_DEDUP_WINDOW = 1.0
+
+local function ActivateCauldron(now)
+    cauldronActiveUntil = math.max(cauldronActiveUntil, now + CAULDRON_ACTIVE_DURATION)
+end
 
 -- Detect cauldron placement via UNIT_SPELLCAST_START (has cast time, unlike taking which is instant)
 local clFrame = CreateFrame("Frame")
@@ -92,10 +117,18 @@ clFrame:SetScript("OnEvent", function(self, event, unit, castGUID, spellID)
     if not unit then return end
     local prefix = string.sub(unit, 1, 4)
     if prefix ~= "raid" and prefix ~= "part" and unit ~= "player" then return end
-    local spellName = C_Spell.GetSpellName(spellID)
-    if not spellName then return end
-    if IsSecret(spellName) then return end
-    if not string.find(string.lower(spellName), "cauldron") then return end
+    if not spellID or IsSecret(spellID) then return end
+
+    -- Match by known spell ID first; fall back to name-contains for unknown cauldrons
+    local matched = CAULDRON_SPELL_IDS[spellID]
+    if not matched then
+        local spellName = C_Spell.GetSpellName(spellID)
+        if not spellName or IsSecret(spellName) then return end
+        if not string.find(string.lower(spellName), "cauldron") then return end
+        matched = spellName
+    end
+    DebugPrint(string.format("UNIT_SPELLCAST_START cauldron: unit=%s spellID=%s spell=%s castGUID=%s",
+        tostring(unit), tostring(spellID), tostring(matched), tostring(castGUID)))
 
     -- Dedup: same cast can fire for both "player" and "raidN" when you're the caster
     if castGUID and recentCastGUIDs[castGUID] then return end
@@ -107,83 +140,152 @@ clFrame:SetScript("OnEvent", function(self, event, unit, castGUID, spellID)
     local cauldrons = GetTodayCauldrons()
     table.insert(cauldrons, { player = placer, time = date("%H:%M") })
 
-    -- Mark the loot session as already-counted so the upcoming flood of flask loots doesn't add a duplicate
-    burstFiredThisSession = true
-    lastFlaskLootTime = GetTime()
+    local now = GetTime()
+    ActivateCauldron(now)
+
+    -- Any creates buffered just before the spell fired are part of this cauldron — count them.
+    local counts = GetTodayCounts()
+    for _, e in ipairs(recentCreates) do
+        local prev = counts[e.player] or 0
+        counts[e.player] = prev + 1
+        DebugPrint(string.format("  retroactive +1 for %s on placement (was %d, now %d)",
+            e.player, prev, counts[e.player]))
+    end
+    recentCreates = {}
 
     Print(string.format("%s placed a cauldron! (%d total today)", placer, #cauldrons))
     RefreshUI()
 end)
 
-local function CheckForCauldronBurst()
-    local now = GetTime()
-    -- Prune old entries
-    local fresh = {}
-    for _, t in ipairs(recentLoots) do
-        if now - t < BURST_WINDOW then
-            tinsert(fresh, t)
+local function CountUniquePlayers(buffer)
+    local seen, n = {}, 0
+    for _, e in ipairs(buffer) do
+        if not seen[e.player] then
+            seen[e.player] = true
+            n = n + 1
         end
     end
-    recentLoots = fresh
-
-    if #recentLoots >= BURST_THRESHOLD and not burstFiredThisSession then
-        burstFiredThisSession = true
-        local cauldrons = GetTodayCauldrons()
-        table.insert(cauldrons, { player = "?", time = date("%H:%M") })
-        Print(string.format("Cauldron detected (burst of %d loots)! (%d total today)", #recentLoots, #cauldrons))
-        RefreshUI()
-    end
+    return n
 end
 
 -- Dedicated frame for CHAT_MSG_LOOT (has 12.0 secret values for other players)
 local lootFrame = CreateFrame("Frame")
 lootFrame:RegisterEvent("CHAT_MSG_LOOT")
 lootFrame:SetScript("OnEvent", function(self, event, msg, playerName)
-    if not msg or IsSecret(msg) then return end
+    if not msg or IsSecret(msg) then
+        DebugPrint(string.format("CHAT_MSG_LOOT skipped: msg=%s playerName=%s",
+            msg and "secret" or "nil",
+            playerName and (IsSecret(playerName) and "secret" or tostring(playerName)) or "nil"))
+        return
+    end
+    DebugPrint(string.format("CHAT_MSG_LOOT raw msg=%q playerName=%s",
+        msg, playerName and (IsSecret(playerName) and "secret" or tostring(playerName)) or "nil"))
     local itemLink = string.match(msg, "|Hitem:.-%|h%[.-%]|h")
-    if not itemLink then return end
-    if not IsFlaskOrPhial(itemLink) then return end
+    if not itemLink then
+        DebugPrint("  no item link found, skipping")
+        return
+    end
+    if not IsFleetingItem(itemLink) then
+        DebugPrint("  item is not Fleeting, skipping: " .. itemLink)
+        return
+    end
+
+    -- Flask cauldrons hand out one item per charge (no stack). Personal alchemy crafts
+    -- in stacks of 5+ ("x5"), so any x-quantity is bench crafting and should be ignored.
+    local qty = tonumber(string.match(msg, "x(%d+)")) or 1
+    if qty > 1 then
+        DebugPrint(string.format("  skipping personal craft (qty=%d): %s", qty, itemLink))
+        return
+    end
 
     local player
     if playerName and not IsSecret(playerName) and playerName ~= "" then
         player = StripRealm(playerName)
+        DebugPrint("  player from playerName arg: " .. player)
     else
         player = UnitName("player")
+        DebugPrint("  player fallback to UnitName('player'): " .. tostring(player))
     end
 
-    if not player or player == "" then return end
+    if not player or player == "" then
+        DebugPrint("  no player resolved, skipping")
+        return
+    end
 
-    local qty = tonumber(string.match(msg, "x(%d+)")) or 1
-    local counts = GetTodayCounts()
-    counts[player] = (counts[player] or 0) + qty
-
-    -- Track for burst detection. A long quiet period since the last flask loot resets the session,
-    -- allowing burst detection to fire again for a new cauldron.
+    -- Dedup: WoW can fire the same event twice (once as "You create", once as group broadcast).
     local now = GetTime()
-    if now - lastFlaskLootTime > SESSION_QUIET then
-        burstFiredThisSession = false
+    local lootKey = player .. "|" .. itemLink
+    local lastSeen = recentLootKeys[lootKey]
+    if lastSeen and (now - lastSeen) < LOOT_DEDUP_WINDOW then
+        DebugPrint(string.format("  DEDUP HIT: same %s create %.2fs ago, skipping", player, now - lastSeen))
+        return
     end
-    lastFlaskLootTime = now
-    tinsert(recentLoots, now)
-    CheckForCauldronBurst()
+    recentLootKeys[lootKey] = now
+    if math.random() < 0.05 then
+        for k, t in pairs(recentLootKeys) do
+            if now - t > LOOT_DEDUP_WINDOW then recentLootKeys[k] = nil end
+        end
+    end
 
-    RefreshUI()
+    -- Each create == 1 charge consumed, regardless of stack size (1 charge = 1 flask OR 5 potions).
+    if now < cauldronActiveUntil then
+        local counts = GetTodayCounts()
+        local prev = counts[player] or 0
+        counts[player] = prev + 1
+        DebugPrint(string.format("  counted +1 for %s (was %d, now %d) [active window]",
+            player, prev, counts[player]))
+        RefreshUI()
+        return
+    end
+
+    -- No active cauldron — buffer and check for a burst that implies one is active.
+    tinsert(recentCreates, { time = now, player = player })
+    while #recentCreates > 0 and (now - recentCreates[1].time) > BURST_WINDOW do
+        tremove(recentCreates, 1)
+    end
+    local uniqueN = CountUniquePlayers(recentCreates)
+    DebugPrint(string.format("  buffered (no active cauldron, %d events from %d players in window)",
+        #recentCreates, uniqueN))
+
+    if uniqueN >= BURST_THRESHOLD then
+        ActivateCauldron(now)
+        local cauldrons = GetTodayCauldrons()
+        table.insert(cauldrons, { player = "?", time = date("%H:%M") })
+        local counts = GetTodayCounts()
+        for _, e in ipairs(recentCreates) do
+            local prev = counts[e.player] or 0
+            counts[e.player] = prev + 1
+            DebugPrint(string.format("  burst counted +1 for %s (was %d, now %d)",
+                e.player, prev, counts[e.player]))
+        end
+        Print(string.format("Cauldron detected (burst of %d creates from %d players)! (%d total today)",
+            #recentCreates, uniqueN, #cauldrons))
+        recentCreates = {}
+        RefreshUI()
+    end
 end)
 
 local function ShowCounts(day)
-    local counts = CauldronTrackerDB[day]
-    if not counts or not next(counts) then
+    local data = CauldronTrackerDB[day]
+    if not data or not next(data) then
+        Print("No flasks/phials tracked for " .. day .. ".")
+        return
+    end
+    -- Handle old format (flat player counts) and new format (counts + cauldrons)
+    local counts = data.counts or data
+    if not next(counts) then
         Print("No flasks/phials tracked for " .. day .. ".")
         return
     end
 
     local sorted = {}
     for name, count in pairs(counts) do
-        table.insert(sorted, { name = name, count = count })
+        if type(count) == "number" then
+            table.insert(sorted, { name = name, count = count })
+        end
     end
     table.sort(sorted, function(a, b) return a.count > b.count end)
 
-    local data = CauldronTrackerDB[day]
     local numCauldrons = data.cauldrons and #data.cauldrons or 0
     local allotment = 0
     if numCauldrons > 0 then
@@ -208,11 +310,15 @@ end
 SLASH_CAULDRON1 = "/cauldron"
 SLASH_CAULDRON2 = "/ct"
 SlashCmdList["CAULDRON"] = function(msg)
-    msg = strtrim(msg):lower()
-    if msg == "reset" then
+    local trimmed = strtrim(msg)
+    local cmd = trimmed:lower()
+    if cmd == "clearlog" then
+        CauldronTrackerDB.debugLog = {}
+        Print("Log cleared.")
+    elseif cmd == "reset" then
         CauldronTrackerDB[Today()] = {}
         Print("Today's counts reset.")
-    elseif msg == "all" then
+    elseif cmd == "all" then
         local days = {}
         for day in pairs(CauldronTrackerDB) do
             table.insert(days, day)
@@ -225,14 +331,14 @@ SlashCmdList["CAULDRON"] = function(msg)
         for _, day in ipairs(days) do
             ShowCounts(day)
         end
-    elseif msg:sub(1, 3) == "add" then
-        local who = strtrim(msg:sub(4))
+    elseif cmd:sub(1, 3) == "add" then
+        local who = strtrim(trimmed:sub(4))
         if who == "" then who = UnitName("player") end
         local cauldrons = GetTodayCauldrons()
         table.insert(cauldrons, { player = who, time = date("%H:%M") })
         Print(string.format("Recorded cauldron from %s (%d total today)", who, #cauldrons))
         RefreshUI()
-    elseif msg == "share" then
+    elseif cmd == "share" then
         local counts = GetTodayCounts()
         if not next(counts) then
             Print("Nothing to share.")
