@@ -1,4 +1,4 @@
-local addonName = ...
+local addonName, ns = ...
 
 local function Today()
     return date("%Y-%m-%d")
@@ -9,10 +9,13 @@ local function Print(msg)
 end
 
 local DEBUG_LOG_MAX = 500  -- keep the most recent N log entries
+-- Stamp includes the date (multi-night logs replay correctly) and GetTime()
+-- with millisecond precision (sub-second dedup decisions can be reconstructed).
 local function DebugPrint(msg)
     if not CauldronTrackerDB then return end
     CauldronTrackerDB.debugLog = CauldronTrackerDB.debugLog or {}
-    table.insert(CauldronTrackerDB.debugLog, date("%H:%M:%S") .. " " .. msg)
+    table.insert(CauldronTrackerDB.debugLog,
+        string.format("%s %.3f %s", date("%Y-%m-%d %H:%M:%S"), GetTime(), msg))
     if #CauldronTrackerDB.debugLog > DEBUG_LOG_MAX then
         table.remove(CauldronTrackerDB.debugLog, 1)
     end
@@ -23,8 +26,22 @@ local function StripRealm(name)
     return (strsplit("-", name, 2))
 end
 
+-- While a cauldron window is active, all writes stay anchored to the day the
+-- window opened — a raid that crosses midnight doesn't split its counts
+-- across two days. (State lives with the detection code further down.)
+local cauldronActiveUntil = 0
+local activeDayKey
+
+local function CurrentDayKey()
+    if activeDayKey and GetTime() < cauldronActiveUntil then
+        return activeDayKey
+    end
+    return Today()
+end
+ns.CurrentDayKey = CurrentDayKey
+
 local function GetTodayData()
-    local today = Today()
+    local today = CurrentDayKey()
     if not CauldronTrackerDB[today] then
         CauldronTrackerDB[today] = { counts = {}, cauldrons = {} }
     end
@@ -90,6 +107,22 @@ loadFrame:SetScript("OnEvent", function(self, event, name)
     if name == addonName then
         CauldronTrackerDB = CauldronTrackerDB or {}
         self:UnregisterEvent("ADDON_LOADED")
+
+        -- Restore a still-active cauldron window across /reload so stragglers'
+        -- flasks keep counting (each placement stores its expiry as epoch time).
+        local nowEpoch = time()
+        for day, data in pairs(CauldronTrackerDB) do
+            if type(data) == "table" and type(data.cauldrons) == "table" then
+                for _, c in ipairs(data.cauldrons) do
+                    if type(c) == "table" and c.expiresAt and c.expiresAt > nowEpoch then
+                        cauldronActiveUntil = math.max(cauldronActiveUntil,
+                            GetTime() + (c.expiresAt - nowEpoch))
+                        activeDayKey = day
+                    end
+                end
+            end
+        end
+
         Print("Loaded. /cauldron to view, /cauldron reset to clear.")
     end
 end)
@@ -98,7 +131,7 @@ end)
 -- is known to be active, any "Fleeting"-item create is counted as 1 cauldron use.
 -- Outside the window, creates are buffered; if 3+ DIFFERENT players create within 30s,
 -- we infer a cauldron is active (spell-cast detection missed) and retroactively count them.
-local cauldronActiveUntil = 0
+-- (cauldronActiveUntil/activeDayKey are declared above with CurrentDayKey)
 local recentCreates = {}  -- buffer of {time, player} for events not yet attributed to a cauldron
 local recentCastGUIDs = {}  -- castGUID -> time, dedup spell-cast detections
 local recentLootKeys = {}  -- (player|itemLink) -> time, dedup duplicate loot messages
@@ -107,6 +140,10 @@ local BURST_WINDOW = 30
 local LOOT_DEDUP_WINDOW = 1.0
 
 local function ActivateCauldron(now)
+    if now >= cauldronActiveUntil then
+        -- Fresh window: anchor all writes to the day it opened
+        activeDayKey = Today()
+    end
     cauldronActiveUntil = math.max(cauldronActiveUntil, now + CAULDRON_ACTIVE_DURATION)
 end
 
@@ -127,6 +164,7 @@ clFrame:SetScript("OnEvent", function(self, event, unit, castGUID, spellID)
         if not string.find(string.lower(spellName), "cauldron") then return end
         matched = spellName
     end
+    if IsSecret(castGUID) then castGUID = nil end
     DebugPrint(string.format("UNIT_SPELLCAST_START cauldron: unit=%s spellID=%s spell=%s castGUID=%s",
         tostring(unit), tostring(spellID), tostring(matched), tostring(castGUID)))
 
@@ -136,20 +174,27 @@ clFrame:SetScript("OnEvent", function(self, event, unit, castGUID, spellID)
 
     local sourceName = UnitName(unit)
     if IsSecret(sourceName) then return end
-    local placer = StripRealm(sourceName)
-    local cauldrons = GetTodayCauldrons()
-    table.insert(cauldrons, { player = placer, time = date("%H:%M") })
-
+    local placer = StripRealm(sourceName) or "?"
     local now = GetTime()
     ActivateCauldron(now)
+    local cauldrons = GetTodayCauldrons()
+    table.insert(cauldrons, { player = placer, time = date("%H:%M"),
+        expiresAt = time() + CAULDRON_ACTIVE_DURATION })
 
-    -- Any creates buffered just before the spell fired are part of this cauldron — count them.
+    -- Any creates buffered just before the spell fired are part of this cauldron —
+    -- count them, but only recent ones (the buffer is only trimmed when loot
+    -- arrives, so it can still hold stale entries from many minutes ago).
     local counts = GetTodayCounts()
     for _, e in ipairs(recentCreates) do
-        local prev = counts[e.player] or 0
-        counts[e.player] = prev + 1
-        DebugPrint(string.format("  retroactive +1 for %s on placement (was %d, now %d)",
-            e.player, prev, counts[e.player]))
+        if now - e.time <= BURST_WINDOW then
+            local prev = counts[e.player] or 0
+            counts[e.player] = prev + 1
+            DebugPrint(string.format("  retroactive +1 for %s on placement (was %d, now %d)",
+                e.player, prev, counts[e.player]))
+        else
+            DebugPrint(string.format("  dropped stale buffered create from %s (%.0fs old)",
+                e.player, now - e.time))
+        end
     end
     recentCreates = {}
 
@@ -250,7 +295,8 @@ lootFrame:SetScript("OnEvent", function(self, event, msg, playerName)
     if uniqueN >= BURST_THRESHOLD then
         ActivateCauldron(now)
         local cauldrons = GetTodayCauldrons()
-        table.insert(cauldrons, { player = "?", time = date("%H:%M") })
+        table.insert(cauldrons, { player = "?", time = date("%H:%M"),
+            expiresAt = time() + CAULDRON_ACTIVE_DURATION })
         local counts = GetTodayCounts()
         for _, e in ipairs(recentCreates) do
             local prev = counts[e.player] or 0
@@ -316,12 +362,15 @@ SlashCmdList["CAULDRON"] = function(msg)
         CauldronTrackerDB.debugLog = {}
         Print("Log cleared.")
     elseif cmd == "reset" then
-        CauldronTrackerDB[Today()] = {}
+        CauldronTrackerDB[CurrentDayKey()] = {}
         Print("Today's counts reset.")
     elseif cmd == "all" then
         local days = {}
         for day in pairs(CauldronTrackerDB) do
-            table.insert(days, day)
+            -- Only real day tables (skips debugLog and any future non-day keys)
+            if day:match("^%d%d%d%d%-%d%d%-%d%d$") then
+                table.insert(days, day)
+            end
         end
         table.sort(days)
         if #days == 0 then
@@ -359,6 +408,6 @@ SlashCmdList["CAULDRON"] = function(msg)
             Print("Not in a group.")
         end
     else
-        ShowCounts(Today())
+        ShowCounts(CurrentDayKey())
     end
 end

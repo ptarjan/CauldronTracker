@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.0.8
+- Fix: raids that run past midnight no longer split their counts across two days — flasks taken after 12am count toward the night the cauldron was placed
+- Fix: a cauldron's 5-minute window now survives a /reload, so flasks taken right after reloading are still counted
+- Fix: flasks crafted long before a cauldron was placed could wrongly count toward it
+- Fix: `/cauldron all` printed a garbage section that wasn't a real day
+- Fix: the tracker window no longer slowly uses more memory the longer it stays open during a raid
+- Update for WoW 12.0.7
+
 ## 1.0.7
 - Stop counting personal alchemy crafting at a workbench as cauldron use — stacks of 5 (or any quantity > 1) are now ignored, since flask cauldrons only hand out one item per charge
 - Also count single-craft potions taken from the flask cauldron (previously only items with "flask" or "phial" in the name were counted, missing cauldron potions)

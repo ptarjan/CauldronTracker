@@ -1,4 +1,4 @@
-local addonName = ...
+local addonName, ns = ...
 
 local CTFrame
 local FRAME_WIDTH = 280
@@ -80,24 +80,49 @@ local function CreateMainFrame()
     return f
 end
 
-local function ClearContent(parent)
-    for _, child in ipairs({ parent.scrollChild:GetRegions() }) do
-        child:Hide()
-        child:SetParent(nil)
+-- WoW never garbage-collects UI regions, so Refresh reuses pooled font
+-- strings/textures instead of creating fresh ones (it runs on every counted
+-- loot event while the window is open).
+local function ResetPools(sc)
+    sc.fsPool = sc.fsPool or {}
+    sc.texPool = sc.texPool or {}
+    sc.fsUsed, sc.texUsed = 0, 0
+    for _, fs in ipairs(sc.fsPool) do fs:Hide() end
+    for _, tex in ipairs(sc.texPool) do tex:Hide() end
+end
+
+local function AcquireFontString(sc, fontObject)
+    sc.fsUsed = sc.fsUsed + 1
+    local fs = sc.fsPool[sc.fsUsed]
+    if not fs then
+        fs = sc:CreateFontString(nil, "OVERLAY")
+        sc.fsPool[sc.fsUsed] = fs
     end
-    for _, child in ipairs({ parent.scrollChild:GetChildren() }) do
-        child:Hide()
-        child:SetParent(nil)
+    fs:SetFontObject(fontObject)
+    fs:ClearAllPoints()
+    fs:Show()
+    return fs
+end
+
+local function AcquireTexture(sc)
+    sc.texUsed = sc.texUsed + 1
+    local tex = sc.texPool[sc.texUsed]
+    if not tex then
+        tex = sc:CreateTexture(nil, "BACKGROUND")
+        sc.texPool[sc.texUsed] = tex
     end
+    tex:ClearAllPoints()
+    tex:Show()
+    return tex
 end
 
 local function Refresh(f)
-    ClearContent(f)
     local sc = f.scrollChild
+    ResetPools(sc)
     local contentWidth = sc:GetWidth()
     local y = 0
 
-    local today = Today()
+    local today = (ns.CurrentDayKey and ns.CurrentDayKey()) or Today()
     local data = CauldronTrackerDB and CauldronTrackerDB[today]
 
     -- Handle old format (flat counts) and new format (counts + cauldrons)
@@ -123,7 +148,7 @@ local function Refresh(f)
     end
 
     if not counts or not next(counts) then
-        local empty = sc:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+        local empty = AcquireFontString(sc, "GameFontHighlight")
         empty:SetPoint("TOPLEFT", sc, "TOPLEFT", 6, -(y + 20))
         empty:SetText("No flasks/phials tracked today.")
         empty:SetTextColor(0.5, 0.5, 0.5)
@@ -138,17 +163,17 @@ local function Refresh(f)
     table.sort(sorted, function(a, b) return a.count > b.count end)
 
     -- Header
-    local headerBg = sc:CreateTexture(nil, "BACKGROUND")
+    local headerBg = AcquireTexture(sc)
     headerBg:SetPoint("TOPLEFT", sc, "TOPLEFT", 0, -y)
     headerBg:SetSize(contentWidth, HEADER_HEIGHT)
     headerBg:SetColorTexture(0.2, 0.2, 0.2, 0.5)
 
-    local nameHeader = sc:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    local nameHeader = AcquireFontString(sc, "GameFontNormalSmall")
     nameHeader:SetPoint("LEFT", sc, "TOPLEFT", 8, -(y + HEADER_HEIGHT / 2))
     nameHeader:SetText("Player")
     nameHeader:SetTextColor(0.7, 0.7, 0.7)
 
-    local countHeader = sc:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    local countHeader = AcquireFontString(sc, "GameFontNormalSmall")
     countHeader:SetPoint("RIGHT", sc, "TOPRIGHT", -8, -(y + HEADER_HEIGHT / 2))
     countHeader:SetText("Count")
     countHeader:SetTextColor(0.7, 0.7, 0.7)
@@ -157,7 +182,7 @@ local function Refresh(f)
 
     for i, entry in ipairs(sorted) do
         if i % 2 == 0 then
-            local rowBg = sc:CreateTexture(nil, "BACKGROUND")
+            local rowBg = AcquireTexture(sc)
             rowBg:SetPoint("TOPLEFT", sc, "TOPLEFT", 0, -y)
             rowBg:SetSize(contentWidth, ROW_HEIGHT)
             rowBg:SetColorTexture(0.15, 0.15, 0.15, 0.4)
@@ -170,12 +195,12 @@ local function Refresh(f)
             cr, cg, cb = 1, 0.33, 0.33
         end
 
-        local nameFs = sc:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+        local nameFs = AcquireFontString(sc, "GameFontHighlight")
         nameFs:SetPoint("LEFT", sc, "TOPLEFT", 8, -(y + ROW_HEIGHT / 2))
         nameFs:SetText(entry.name)
         nameFs:SetTextColor(cr, cg, cb)
 
-        local countFs = sc:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+        local countFs = AcquireFontString(sc, "GameFontHighlight")
         countFs:SetPoint("RIGHT", sc, "TOPRIGHT", -8, -(y + ROW_HEIGHT / 2))
         countFs:SetText(tostring(entry.count))
         countFs:SetTextColor(cr, cg, cb)
@@ -185,7 +210,7 @@ local function Refresh(f)
 
     -- Total
     y = y + 4
-    local totalFs = sc:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    local totalFs = AcquireFontString(sc, "GameFontNormal")
     totalFs:SetPoint("LEFT", sc, "TOPLEFT", 8, -(y + ROW_HEIGHT / 2))
     local total = 0
     for _, e in ipairs(sorted) do total = total + e.count end
