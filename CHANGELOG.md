@@ -1,5 +1,8 @@
 # Changelog
 
+## 1.0.9
+- Ready for WoW 12.1.0
+
 ## 1.0.8
 - Fix: raids that run past midnight no longer split their counts across two days — flasks taken after 12am count toward the night the cauldron was placed
 - Fix: a cauldron's 5-minute window now survives a /reload, so flasks taken right after reloading are still counted
