@@ -65,7 +65,7 @@ end
 -- Matching the prefix captures the full set rather than just flasks/phials.
 local function IsFleetingItem(itemLink)
     if not itemLink then return false end
-    local name = C_Item.GetItemNameByID(itemLink) or GetItemInfo(itemLink)
+    local name = C_Item.GetItemNameByID(itemLink) or C_Item.GetItemInfo(itemLink)
     if not name then
         name = itemLink:match("%[(.-)%]")
     end
@@ -392,9 +392,9 @@ SlashCmdList["CAULDRON"] = function(msg)
         table.sort(sorted, function(a, b) return a.count > b.count end)
         local channel = IsInRaid() and "RAID" or IsInGroup() and "PARTY" or nil
         if channel then
-            SendChatMessage("[Cauldron] Flask/Phial counts:", channel)
+            C_ChatInfo.SendChatMessage("[Cauldron] Flask/Phial counts:", channel)
             for _, entry in ipairs(sorted) do
-                SendChatMessage(string.format("  %s: %d", entry.name, entry.count), channel)
+                C_ChatInfo.SendChatMessage(string.format("  %s: %d", entry.name, entry.count), channel)
             end
         else
             Print("Not in a group.")
