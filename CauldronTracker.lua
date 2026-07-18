@@ -83,14 +83,6 @@ local CAULDRON_SPELL_IDS = {
 }
 local CAULDRON_ACTIVE_DURATION = 300  -- cauldron lasts 5 minutes after placement
 
-local function GetAllotment()
-    local cauldrons = GetTodayCauldrons()
-    local totalCharges = #cauldrons * CAULDRON_CHARGES
-    local raidSize = GetNumGroupMembers()
-    if raidSize == 0 then raidSize = 1 end
-    return math.floor(totalCharges / raidSize)
-end
-
 local function IsSecret(v)
     return issecretvalue and issecretvalue(v)
 end
