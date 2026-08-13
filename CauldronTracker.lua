@@ -146,13 +146,15 @@ clFrame:SetScript("OnEvent", function(self, event, unit, castGUID, spellID)
     if not unit then return end
     local prefix = string.sub(unit, 1, 4)
     if prefix ~= "raid" and prefix ~= "part" and unit ~= "player" then return end
-    if not spellID or IsSecret(spellID) then return end
+    -- IsSecret must run before any truthiness test: boolean-testing a secret
+    -- value is itself an error under 12.0 semantics.
+    if IsSecret(spellID) or not spellID then return end
 
     -- Match by known spell ID first; fall back to name-contains for unknown cauldrons
     local matched = CAULDRON_SPELL_IDS[spellID]
     if not matched then
         local spellName = C_Spell.GetSpellName(spellID)
-        if not spellName or IsSecret(spellName) then return end
+        if IsSecret(spellName) or not spellName then return end
         if not string.find(string.lower(spellName), "cauldron") then return end
         matched = spellName
     end
@@ -209,14 +211,14 @@ end
 local lootFrame = CreateFrame("Frame")
 lootFrame:RegisterEvent("CHAT_MSG_LOOT")
 lootFrame:SetScript("OnEvent", function(self, event, msg, playerName)
-    if not msg or IsSecret(msg) then
+    if IsSecret(msg) or not msg then
         DebugPrint(string.format("CHAT_MSG_LOOT skipped: msg=%s playerName=%s",
-            msg and "secret" or "nil",
-            playerName and (IsSecret(playerName) and "secret" or tostring(playerName)) or "nil"))
+            IsSecret(msg) and "secret" or "nil",
+            IsSecret(playerName) and "secret" or tostring(playerName)))
         return
     end
     DebugPrint(string.format("CHAT_MSG_LOOT raw msg=%q playerName=%s",
-        msg, playerName and (IsSecret(playerName) and "secret" or tostring(playerName)) or "nil"))
+        msg, IsSecret(playerName) and "secret" or tostring(playerName)))
     local itemLink = string.match(msg, "|Hitem:.-%|h%[.-%]|h")
     if not itemLink then
         DebugPrint("  no item link found, skipping")
@@ -236,7 +238,7 @@ lootFrame:SetScript("OnEvent", function(self, event, msg, playerName)
     end
 
     local player
-    if playerName and not IsSecret(playerName) and playerName ~= "" then
+    if not IsSecret(playerName) and playerName and playerName ~= "" then
         player = StripRealm(playerName)
         DebugPrint("  player from playerName arg: " .. player)
     else
