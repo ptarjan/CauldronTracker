@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.0.10
+- Fix: the addon errored out on every cauldron cast and every loot message under WoW 12.x — the check for "secret" values ran after a test that itself threw on a secret. Flask counting works again.
+- Fix: replaced WoW API calls that were deprecated in 12.x
+
 ## 1.0.9
 - Ready for WoW 12.1.0
 
